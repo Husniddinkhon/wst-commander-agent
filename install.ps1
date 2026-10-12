@@ -32,6 +32,7 @@ Write-Host "Downloading latest agent..."
 New-Item -ItemType Directory -Force -Path $Tmp | Out-Null
 Invoke-WebRequest -UseBasicParsing -Uri $ZipUrl -OutFile $Zip
 
+$Backup = $null
 if (Test-Path $InstallDir) {
   $Backup = "$InstallDir.backup-$(Get-Date -Format yyyyMMdd-HHmmss)"
   Move-Item $InstallDir $Backup
@@ -80,18 +81,26 @@ if ($config) {
   } catch {}
 }
 
-# Replace stale identity so this install pairs to the current user's account.
+# Preserve an existing trusted device identity on upgrades; pair only on a fresh install.
 $agentDir = Split-Path $Client -Parent
-Remove-Item (Join-Path $agentDir 'device-identity.json') -Force -ErrorAction SilentlyContinue
+$identity = Join-Path $agentDir 'device-identity.json'
+$oldIdentity = if($Backup){ Join-Path $Backup 'agent\device-identity.json' } else { $null }
+$NeedsPairing = $true
+if($oldIdentity -and (Test-Path $oldIdentity)){
+  Copy-Item $oldIdentity $identity -Force
+  $NeedsPairing = $false
+  Write-Host "Existing device pairing preserved." -ForegroundColor Green
+}
 Remove-Item (Join-Path $agentDir 'pairing-request.json') -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $agentDir 'gateway-client.pid') -Force -ErrorAction SilentlyContinue
 
-# Create pairing request.
-$out = & $Node $Client pairRequest
-if ($LASTEXITCODE -ne 0) { throw "Pairing request failed." }
-$pair = $out | ConvertFrom-Json
-$code = [string]$pair.code
-Set-Clipboard -Value $code
+if($NeedsPairing){
+  $out = & $Node $Client pairRequest
+  if ($LASTEXITCODE -ne 0) { throw "Pairing request failed." }
+  $pair = $out | ConvertFrom-Json
+  $code = [string]$pair.code
+  Set-Clipboard -Value $code
+}
 
 # Install reliability helpers.
 Copy-Item (Join-Path $PSScriptRoot 'watchdog.ps1') (Join-Path $InstallDir 'watchdog.ps1') -Force
@@ -123,6 +132,15 @@ Start-Process -FilePath 'powershell.exe' -ArgumentList ('-NoProfile -ExecutionPo
 Start-Sleep -Seconds 2
 foreach($port in 4318,4319){
   if(-not (Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)) { throw "Local WST service port $port did not start." }
+}
+
+if(-not $NeedsPairing){
+  Start-Sleep -Seconds 2
+  & $Node $Client heartbeat | Out-Null
+  Write-Host "WST Commander upgraded and ONLINE - pairing kept." -ForegroundColor Green
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $InstallDir 'self-test.ps1')
+  Remove-Item $Tmp -Recurse -Force -ErrorAction SilentlyContinue
+  exit 0
 }
 
 $pairUrl = "$Gateway/"
