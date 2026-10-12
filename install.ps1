@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 
 # Migrate old SYSTEM-service installations automatically when present.
 $legacyServices = @('WSTCommanderMCP','WSTCommanderAgent') | Where-Object { Get-Service -Name $_ -ErrorAction SilentlyContinue }
@@ -98,7 +98,7 @@ $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 99 -RestartInterval (New-TimeSpan -Minutes 1)
 $tasks = @(
-  @{Name='WST Commander MCP'; Script=$McpServer},
+  @{Name='WST Commander MCP'; Script=$McpServer; Args='--http'},
   @{Name='WST Commander Chat'; Script=$DashboardServer},
   @{Name='WST Commander Agent'; Script=$Client; Args='loop'}
 )
@@ -109,7 +109,7 @@ foreach($t in $tasks){
 }
 
 # Start once immediately.
-Start-Process -FilePath $Node -ArgumentList ('"' + $McpServer + '"') -WindowStyle Hidden
+Start-Process -FilePath $Node -ArgumentList ('"' + $McpServer + '" --http') -WindowStyle Hidden
 Start-Process -FilePath $Node -ArgumentList ('"' + $DashboardServer + '"') -WindowStyle Hidden
 Start-Process -FilePath $Node -ArgumentList ('"' + $Client + '" loop') -WindowStyle Hidden
 Start-Sleep -Seconds 2
