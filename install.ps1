@@ -1,4 +1,26 @@
 ﻿$ErrorActionPreference = "Stop"
+
+# Migrate old SYSTEM-service installations automatically when present.
+$legacyServices = @('WSTCommanderMCP','WSTCommanderAgent') | Where-Object { Get-Service -Name $_ -ErrorAction SilentlyContinue }
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($legacyServices.Count -gt 0 -and -not $isAdmin) {
+  Write-Host "Upgrading an older WST Commander installation..." -ForegroundColor Yellow
+  $arg = '-NoProfile -ExecutionPolicy Bypass -File "' + $PSCommandPath + '"'
+  Start-Process powershell.exe -Verb RunAs -ArgumentList $arg
+  exit 0
+}
+if ($legacyServices.Count -gt 0) {
+  foreach($svc in $legacyServices){
+    Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
+    sc.exe delete $svc | Out-Null
+  }
+  Start-Sleep -Seconds 1
+}
+
+# Remove old per-user autostart tasks from pre-0.8 installs.
+@('WSTCommanderGateway','WSTCommanderGatewayWatchdog','WSTCommanderUIAgent','WSTCommanderUIWatchdog','WST Commander MCP','WST Commander Chat','WST Commander Agent') | ForEach-Object {
+  Unregister-ScheduledTask -TaskName $_ -Confirm:$false -ErrorAction SilentlyContinue
+}
 $Gateway = "https://commander.montag.uz"
 $ZipUrl = "$Gateway/download/wst-commander-agent-win.zip"
 $InstallDir = Join-Path $env:LOCALAPPDATA "WSTCommander"
@@ -122,4 +144,5 @@ do {
 } while ((Get-Date) -lt $deadline)
 
 Write-Host "Pairing is still waiting. Keep this window open and approve the code in the browser." -ForegroundColor Yellow
+
 
