@@ -29,7 +29,23 @@ if ($items.Count -eq 1 -and $items[0].PSIsContainer) {
 $Node = Get-ChildItem $InstallDir -Recurse -Filter node.exe -File | Select-Object -First 1 -ExpandProperty FullName
 $Client = Get-ChildItem $InstallDir -Recurse -Filter gateway-client.js -File | Select-Object -First 1 -ExpandProperty FullName
 if (-not $Node) { $Node = (Get-Command node.exe -ErrorAction SilentlyContinue).Source }
+if (-not $Node) {
+  Write-Host "Installing private portable Node.js runtime..."
+  $NodeVersion = "22.23.3"
+  $NodeZip = "$Tmp\node.zip"
+  $NodeDir = Join-Path $InstallDir "runtime"
+  Invoke-WebRequest -UseBasicParsing -Uri "https://nodejs.org/dist/v$NodeVersion/node-v$NodeVersion-win-x64.zip" -OutFile $NodeZip
+  $NodeExtract = "$Tmp\node"
+  Expand-Archive -Path $NodeZip -DestinationPath $NodeExtract -Force
+  New-Item -ItemType Directory -Force -Path $NodeDir | Out-Null
+  $NodeRoot = Get-ChildItem $NodeExtract -Directory | Select-Object -First 1 -ExpandProperty FullName
+  Copy-Item "$NodeRoot\*" $NodeDir -Recurse -Force
+  $Node = Join-Path $NodeDir "node.exe"
+}
 if (-not $Node -or -not $Client) { throw "Agent package is incomplete (node.exe or gateway-client.js missing)." }
+$McpServer = Get-ChildItem $InstallDir -Recurse -Filter server.js -File | Where-Object {$_.FullName -match '\\src\\server\.js$'} | Select-Object -First 1 -ExpandProperty FullName
+$DashboardServer = Get-ChildItem $InstallDir -Recurse -Filter server.js -File | Where-Object {$_.FullName -match '\\dashboard\\server\.js$'} | Select-Object -First 1 -ExpandProperty FullName
+if (-not $McpServer -or -not $DashboardServer) { throw "Agent package is incomplete (local tool services missing)." }
 
 # Ensure gateway URL is production.
 $config = Get-ChildItem $InstallDir -Recurse -Filter config.json -File | Select-Object -First 1 -ExpandProperty FullName
@@ -55,16 +71,29 @@ $pair = $out | ConvertFrom-Json
 $code = [string]$pair.code
 Set-Clipboard -Value $code
 
-# Autostart via Scheduled Task at user logon.
-$taskName = 'WST Commander Agent'
-$action = New-ScheduledTaskAction -Execute $Node -Argument ('"' + $Client + '" loop')
+# Autostart core services and the remote agent at user logon.
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 99 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+$tasks = @(
+  @{Name='WST Commander MCP'; Script=$McpServer},
+  @{Name='WST Commander Chat'; Script=$DashboardServer},
+  @{Name='WST Commander Agent'; Script=$Client; Args='loop'}
+)
+foreach($t in $tasks){
+  $arg = '"' + $t.Script + '"' + $(if($t.Args){' ' + $t.Args}else{''})
+  $action = New-ScheduledTaskAction -Execute $Node -Argument $arg
+  Register-ScheduledTask -TaskName $t.Name -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+}
 
 # Start once immediately.
+Start-Process -FilePath $Node -ArgumentList ('"' + $McpServer + '"') -WindowStyle Hidden
+Start-Process -FilePath $Node -ArgumentList ('"' + $DashboardServer + '"') -WindowStyle Hidden
 Start-Process -FilePath $Node -ArgumentList ('"' + $Client + '" loop') -WindowStyle Hidden
+Start-Sleep -Seconds 2
+foreach($port in 4318,4319){
+  if(-not (Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)) { throw "Local WST service port $port did not start." }
+}
 
 $pairUrl = "$Gateway/"
 Start-Process $pairUrl
@@ -93,3 +122,4 @@ do {
 } while ((Get-Date) -lt $deadline)
 
 Write-Host "Pairing is still waiting. Keep this window open and approve the code in the browser." -ForegroundColor Yellow
+
