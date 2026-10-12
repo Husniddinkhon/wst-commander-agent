@@ -93,6 +93,10 @@ $pair = $out | ConvertFrom-Json
 $code = [string]$pair.code
 Set-Clipboard -Value $code
 
+# Install reliability helpers.
+Copy-Item (Join-Path $PSScriptRoot 'watchdog.ps1') (Join-Path $InstallDir 'watchdog.ps1') -Force
+Copy-Item (Join-Path $PSScriptRoot 'self-test.ps1') (Join-Path $InstallDir 'self-test.ps1') -Force
+
 # Autostart core services and the remote agent at user logon.
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
@@ -107,11 +111,15 @@ foreach($t in $tasks){
   $action = New-ScheduledTaskAction -Execute $Node -Argument $arg
   Register-ScheduledTask -TaskName $t.Name -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 }
+$watchdogScript=Join-Path $InstallDir 'watchdog.ps1'
+$watchdogAction=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "'+$watchdogScript+'"')
+Register-ScheduledTask -TaskName 'WST Commander Watchdog' -Action $watchdogAction -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 
 # Start once immediately.
 Start-Process -FilePath $Node -ArgumentList ('"' + $McpServer + '" --http') -WindowStyle Hidden
 Start-Process -FilePath $Node -ArgumentList ('"' + $DashboardServer + '"') -WindowStyle Hidden
 Start-Process -FilePath $Node -ArgumentList ('"' + $Client + '" loop') -WindowStyle Hidden
+Start-Process -FilePath 'powershell.exe' -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "'+$watchdogScript+'"') -WindowStyle Hidden
 Start-Sleep -Seconds 2
 foreach($port in 4318,4319){
   if(-not (Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)) { throw "Local WST service port $port did not start." }
